@@ -1,5 +1,10 @@
 """
-pydoit example: download a CSV file and load it into a PostgreSQL table using Polars.
+pydoit example (closure style): download a CSV file and load it into a
+PostgreSQL table using Polars.
+
+Each task creator (task_*) defines its own action functions inside it. The
+actions are closures: they can see the task creator's variables, and doit
+passes `targets` / `dependencies` into them by parameter name.
 
 Setup:
     pip install doit polars requests adbc-driver-postgresql pyarrow
@@ -38,50 +43,23 @@ DOIT_CONFIG = {
 
 
 # ---------------------------------------------------------------------------
-# Task actions (plain Python functions)
-# ---------------------------------------------------------------------------
-def download_csv(url, dest):
-    """Download a file from `url` to `dest`."""
-    dest = Path(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
-    dest.write_bytes(response.content)
-    print(f"Downloaded {url} -> {dest} ({len(response.content)} bytes)")
-
-
-def load_to_postgres(csv_path, table_name, db_url):
-    """Read a CSV with Polars and write it to a PostgreSQL table (replacing it)."""
-    df = pl.read_csv(csv_path)
-    df.write_database(
-        table_name=table_name,
-        connection=db_url,
-        if_table_exists="replace",
-        engine="adbc",
-    )
-    print(f"Loaded {df.height} rows into table '{table_name}'")
-
-
-def table_exists(table_name, db_url):
-    """uptodate check: True if the table already exists in the database."""
-    try:
-        result = pl.read_database_uri(
-            query=f"SELECT to_regclass('public.{table_name}') IS NOT NULL AS exists",
-            uri=db_url,
-            engine="adbc",
-        )
-        return bool(result["exists"][0])
-    except Exception:
-        return False  # DB unreachable -> treat as not up to date so the task runs/errors visibly
-
-
-# ---------------------------------------------------------------------------
-# doit tasks (functions named task_*)
+# doit tasks (task creators); actions are closures defined inside each one
 # ---------------------------------------------------------------------------
 def task_download_csv():
     """Download the CSV file."""
+
+    def download_csv(targets):
+        # `targets` is injected by doit from the 'targets' list below.
+        # CSV_URL is captured from the enclosing module scope.
+        dest = Path(targets[0])
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        response = requests.get(CSV_URL, timeout=60)
+        response.raise_for_status()
+        dest.write_bytes(response.content)
+        print(f"Downloaded {CSV_URL} -> {dest} ({len(response.content)} bytes)")
+
     return {
-        "actions": [(download_csv, [CSV_URL, CSV_PATH])],
+        "actions": [download_csv],
         "targets": [CSV_PATH],      # doit skips the task if the target exists
         "uptodate": [True],         # ...and won't re-download unless the target is missing
         "clean": True,              # `doit clean` deletes the target file
@@ -90,11 +68,35 @@ def task_download_csv():
 
 def task_load_csv_to_postgres():
     """Load the downloaded CSV into a PostgreSQL table."""
+
+    def load_to_postgres(dependencies):
+        # `dependencies` is injected by doit from the 'file_dep' list below.
+        df = pl.read_csv(dependencies[0])
+        df.write_database(
+            table_name=TABLE_NAME,
+            connection=DB_URL,
+            if_table_exists="replace",
+            engine="adbc",
+        )
+        print(f"Loaded {df.height} rows into table '{TABLE_NAME}'")
+
+    def table_exists():
+        """uptodate check: True if the table already exists in the database."""
+        try:
+            result = pl.read_database_uri(
+                query=f"SELECT to_regclass('public.{TABLE_NAME}') IS NOT NULL AS exists",
+                uri=DB_URL,
+                engine="adbc",
+            )
+            return bool(result["exists"][0])
+        except Exception:
+            return False  # DB unreachable -> treat as not up to date so the task runs/errors visibly
+
     return {
-        "actions": [(load_to_postgres, [CSV_PATH, TABLE_NAME, DB_URL])],
+        "actions": [load_to_postgres],
         "file_dep": [CSV_PATH],     # re-run if the CSV content changes
         "task_dep": ["download_csv"],
         # also re-run if the table was dropped from the database
-        "uptodate": [(table_exists, [TABLE_NAME, DB_URL])],
+        "uptodate": [table_exists],
         "verbosity": 2,
     }
