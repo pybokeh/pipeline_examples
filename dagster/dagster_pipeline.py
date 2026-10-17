@@ -50,7 +50,10 @@ TABLE_ASSET_KEY = dg.AssetKey("iris_postgres_table")
 # Resource: wraps the Postgres connection details and write logic
 # ---------------------------------------------------------------------------
 class PostgresResource(dg.ConfigurableResource):
-    """Writes Polars DataFrames to PostgreSQL via the ADBC driver."""
+    """Writes Polars DataFrames to PostgreSQL via the ADBC driver.
+       This class is using Pydantic so it expects that you pass
+       connection_uri when you instantiate PostgresResource.
+    """
 
     connection_uri: str
 
@@ -139,7 +142,7 @@ defs = dg.Definitions(
 
 if __name__ == "__main__":
     result = dg.materialize(
-        [download_iris_csv, load_iris_to_postgres],
+        asset=[download_iris_csv, load_iris_to_postgres],
         resources={"postgres": PostgresResource(connection_uri=DB_URL)},
     )
     print("Success!" if result.success else "Run failed.")
